@@ -29,6 +29,9 @@ class Gaussians
         obervationWeights.resize(maxSets);
         obervationWeights.setZero();
 
+        Scores.resize(maxSets);
+        Scores.setZero();
+
         numPointSets = 0;
         numPoints = 0;
     }
@@ -52,15 +55,22 @@ class Gaussians
     void addPointSet(std::vector<int> ids, const pc_elem &cloudTraj, float gridSize, double observationWeight=1.0)
     {
         // prevent overflow
-        if (numPointSets>=maxSets) return;
+        if (numPointSets>=maxSets)
+        {
+            std::cerr <<  "Point set limit reached in Gaussians!" << std::endl;
+            return;
+        }
 
         /* calculate info mat */
         Eigen::MatrixX3d subset = cloudTraj.XYZ(Eigen::all,Eigen::Map<Eigen::VectorXi, Eigen::Unaligned>(ids.data(), ids.size())).transpose();
 
         MatrixXd centered = subset.rowwise() - subset.colwise().mean();
         Matrix3d cov = (centered.adjoint() * centered) / double(subset.rows() - 1);
+        Matrix3d cov_lim;
 
         sumOfCovNorms = sumOfCovNorms + cov.norm();
+
+        double addScore = std::log(1+cov.inverse().determinant());
 
         // generate pseudo cov and check if voxel contains information
         if ( generatePseudoCov(cov,limited_cov,gridSize) == 0)
@@ -69,6 +79,8 @@ class Gaussians
             return;
         }
 
+        differentialEntropy = differentialEntropy + addScore;
+
         // save information matrix
         infoMats[numPointSets] = cov.inverse();
 
@@ -76,7 +88,7 @@ class Gaussians
 
         //sumOfWeightedInfoNorms = sumOfWeightedInfoNorms + (double) connectedPointIds[k].size() * infoMats[k].norm();
 
-        differentialEntropy = differentialEntropy + std::log(infoMats[numPointSets].norm());
+
 
         realDifferentialEntropy = realDifferentialEntropy + log(cov.determinant() );
 
@@ -104,6 +116,29 @@ class Gaussians
         // update
         ++numPointSets;
         numPoints += ids.size();
+    }
+
+    void updateScores(const pc_elem &cloudTraj, float gridSize)
+    {
+
+        #pragma omp parallel num_threads(8)
+        for (int k = 0; k < numPointSets; ++k)
+        {
+            Eigen::MatrixX3d subset = cloudTraj.XYZ(Eigen::all,connectedPointIds[k]).transpose();
+
+            MatrixXd centered = subset.rowwise() - subset.colwise().mean();
+            Matrix3d cov = (centered.adjoint() * centered) / double(subset.rows() - 1);
+
+            int i = generatePseudoCov(cov,false,gridSize);
+
+            //Scores(k) =  std::log(1.0+cov.inverse().determinant()*1e-4);
+            Scores(k) =  std::sqrt(cov.inverse().determinant());
+            //Scores(k) =  -cov.determinant();
+
+
+        }
+
+
     }
 
     void updateRebalancingWeights()
@@ -152,9 +187,16 @@ class Gaussians
 
     }
 
+    
+
     std::vector<Eigen::VectorXi> connectedPointIds;
     std::vector<Eigen::VectorXi> errorVecIds;
     std::vector<Eigen::Matrix3d> infoMats;
+
+    Eigen::VectorXd Scores;
+
+    double oneScore;
+
     Eigen::VectorXi numPointsPerSet;
     Eigen::VectorXd rebalancingWeights;
     Eigen::VectorXd obervationWeights;
@@ -171,14 +213,16 @@ class Gaussians
     bool limited_cov = false;
 
     int numPointSets;
-    int maxSets = 30000;
+    int maxSets = 50000;
     uint64_t numPoints;
 };
 
 class dmsa {
     public:
     dmsa(float gridSize)
-    {};
+    {
+        GRID_OCTREE_MAP = gridSize;
+    };
 
     float GRID_OCTREE_MAP = 1.0f;
 
@@ -188,11 +232,16 @@ class dmsa {
     double meanUnbalancedError;
 
 
+
 Gaussians currentGauss;
 
-double optimizeMap(MapManagement *Map, int numIter, double alpha, bool REBALANCE, bool select_best_set, bool limited_cov, double inlierRatio, bool reduce_gain=true);
+double optimizeMap(MapManagement *Map, int numIter, double& alpha, bool REBALANCE, bool select_best_set, bool limited_cov, double inlierRatio, bool reduce_gain=true);
+
+double optimizeMap2(MapManagement *Map, int numIter, double& alpha, bool REBALANCE, bool select_best_set, bool limited_cov, double inlierRatio,bool reduce_gain=true);
 
 void getNumericJacobianMap(MapManagement &Map, const Eigen::VectorXd& Error0, Eigen::Ref<MatrixXd> Jacobian);
+
+void getNumericJacobianMap2(MapManagement &Map, const Eigen::VectorXd& Error0, Eigen::Ref<Eigen::MatrixXd> Jacobian);
 
 
 };

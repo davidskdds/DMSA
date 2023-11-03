@@ -62,4 +62,36 @@ inline std::vector<std::string> listFilesInDirectory(const std::string& director
     return files;
 }
 
+inline void savePosesToTxt(Eigen::Matrix3Xd& Translations, Eigen::Matrix3Xd& Orientations, std::vector<double> Stamps, std::string result_dir,std::string prefix)
+{
+
+    std::ofstream poses_file;
+    std::string PosesFileName;
+
+    PosesFileName = result_dir+"/"+prefix + ".txt";
+    poses_file.open(PosesFileName);
+
+    for(int k = 0; k < Stamps.size(); ++k)
+    {
+        // save timestamp
+        poses_file << std::setprecision(3) << std::fixed << Stamps[k] << " ";
+
+        // save translation parameters
+        poses_file << std::setprecision(3) << std::fixed << Translations(0,k) << " " <<Translations(1,k) << " " <<Translations(2,k) << " ";
+
+        // calculate quaternion and save it
+        Matrix3d R = axang2rotm(Orientations.col(k));
+        Quaterniond q(R);
+
+        poses_file << std::setprecision(3) << std::fixed << q.x() << " " << q.y() << " " << q.z() << " " << q.w();
+
+        // new row
+        poses_file << "\n";
+
+    }
+    poses_file.flush();
+    poses_file.close();
+
+}
+
 

@@ -5,6 +5,8 @@
 #include "IO_functions.h"
 #include "config.h"
 #include <thread>
+#include <cstdlib>
+#include <ctime>
 
 using namespace Eigen;
 using namespace pcl;
@@ -45,6 +47,22 @@ int main(int argc, char** argv) {
     config dmsa_conf;
     int numKeyframesAdded = 0;
 
+    // init viewer
+    pcl::visualization::PCLVisualizer *viewer;
+
+    if (dmsa_conf.live_view)
+    {
+        std::cout << "Start point cloud viewer " << std::endl;
+
+        // init viewer on seperate thread
+        viewer = new pcl::visualization::PCLVisualizer ("DMSA Point Cloud Viewer");
+
+        std::thread t1(updateWindow, viewer);
+        t1.detach();
+    }
+
+    std::cout << "Load point clouds " << std::endl;
+
     // load poses in tum format
     Eigen::MatrixXd Poses_tum = readPosesFromFile(directory);
 
@@ -82,7 +100,14 @@ int main(int argc, char** argv) {
             }
 
             // get position and axang w. r. t. world frame from poses in tum format
-            Vector3d position_w = Poses_tum.block(numKeyframesAdded,1,0,3).transpose();
+            //Vector3d position_w = Poses_tum.block(numKeyframesAdded,1,0,3).transpose();
+
+            Vector3d position_w;
+
+            position_w(0) = Poses_tum(numKeyframesAdded,1);
+            position_w(1) = Poses_tum(numKeyframesAdded,2);
+            position_w(2) = Poses_tum(numKeyframesAdded,3);
+
             
             // convert quaternion to axangle
             Quaterniond q;
@@ -95,31 +120,73 @@ int main(int argc, char** argv) {
             Vector3d axang_w = rotm2axang(q.normalized().toRotationMatrix());
 
             // add pc to dmsa map
-            Map.addKeyframe(position_w,axang_w,pc_filtered_eig,Poses_tum(numKeyframesAdded,0));
-            
+            if (numKeyframesAdded%3 == 0) Map.addKeyframe(position_w,axang_w,pc_filtered_eig,Poses_tum(numKeyframesAdded,0));
 
+
+            // update cloud
+            Map.updateGlobalCloud();
+
+            // visualize global cloud
+            if (dmsa_conf.live_view)
+            {
+                viewer_mutex.lock();
+                visualizePc(*viewer,Map.trajParamsGlo.Translations ,Map.globalCloud.XYZ,Vector3f(0.,0.,0.));
+                viewer_mutex.unlock();
+            }
+            
             ++numKeyframesAdded;
 
             std::cout << "Added keyframe no. " << numKeyframesAdded << " points" << std::endl;
         }
     }
 
-    // init viewer
-    pcl::visualization::PCLVisualizer *viewer;
+    savePosesToTxt(Map.trajParamsGlo.Translations, Map.trajParamsGlo.Orientations, Map.getKeyframeStamps(), directory,"Original_poses");
 
+    // add some noise
+    Map.global2relative();
+
+    for(int k = 1; k < Map.getNumKeyframes(); ++k)
+    {
+        // get random values
+        double sigma_p = 0.1;
+        double sigma_r = 0.008;
+
+        srand (static_cast <unsigned> (time(0)));
+        double r1 = static_cast <double> (rand()) / (static_cast <double> (RAND_MAX));
+        srand (static_cast <unsigned> (time(0)));
+        double r2 = static_cast <double> (rand()) / (static_cast <double> (RAND_MAX));
+        srand (static_cast <unsigned> (time(0)));
+        double r3 = static_cast <double> (rand()) / (static_cast <double> (RAND_MAX));
+
+        Map.trajParamsRel.Translations.col(k) += sigma_p*2.*Eigen::Vector3d(r1-0.5,r2-0.5,r3-0.5);
+
+        Map.trajParamsRel.Orientations.col(k) = rotm2axang( axang2rotm(sigma_r*2.*Eigen::Vector3d(r1-0.5,r2-0.5,r3-0.5))*axang2rotm(Map.trajParamsRel.Orientations.col(k)));
+
+    }
+
+    Map.relative2global();
+
+    std::cout << "Added noise to keyframes " << std::endl;
+
+    // update cloud
+    Map.updateGlobalCloud();
+
+    // visualize global cloud
     if (dmsa_conf.live_view)
     {
-        std::cout << "Start point cloud viewer " << std::endl;
-
-        // init viewer on seperate thread
-        viewer = new pcl::visualization::PCLVisualizer ("DMSA Point Cloud Viewer");
-
-        std::thread t1(updateWindow, viewer);
-        t1.detach();
+        viewer_mutex.lock();
+        visualizePc(*viewer,Map.trajParamsGlo.Translations ,Map.globalCloud.XYZ,Vector3f(0.,0.,0.));
+        viewer_mutex.unlock();
     }
+
+    // save poses with additional noise
+    savePosesToTxt(Map.trajParamsGlo.Translations, Map.trajParamsGlo.Orientations, Map.getKeyframeStamps(), directory,"noisy_poses");
+
+
 
     // optimization loop
     double score = 0;
+    double alpha = 0.5;
 
     dmsa DMSA_cloud_optimzer(dmsa_conf.grid_size_dmsa);
 
@@ -138,10 +205,13 @@ int main(int argc, char** argv) {
         std::cout << "Optimization step "<< iter << std::endl;
 
         // optimize one iteration
-        score = DMSA_cloud_optimzer.optimizeMap(&Map,1,0.4,true,false,true,0.97);
+        score = DMSA_cloud_optimzer.optimizeMap2(&Map,1,alpha,true,false,true,0.97,true);
 
         // update cloud
         Map.updateGlobalCloud();
+
+        // save new poses
+        savePosesToTxt(Map.trajParamsGlo.Translations, Map.trajParamsGlo.Orientations, Map.getKeyframeStamps(), directory,"Optimized_poses");
 
     }
 
